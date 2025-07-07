@@ -1,4 +1,8 @@
 a: foo
-b: bar
-c:
+b: &single bar
+c: &obj
   some: nested
+d: *single
+e: 
+  <<: *obj
+  another: foo
