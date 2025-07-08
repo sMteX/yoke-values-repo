@@ -1,0 +1,156 @@
+namespace: divadlomir
+service: divadlomir
+component: app
+environment: prod
+image: &image
+  repository: harbor.11333311.xyz/divadlomir/divadlomir
+  tag: v1.2.0
+  pullSecrets:
+    - harbor-hetzner-pull
+#replicaCount: 6
+command:
+  - node
+  - --max-old-space-size=1800
+  - server.js
+podLabels:
+  logs: mir-app
+resources:
+  requests:
+    cpu: 200m
+    memory: 1Gi
+  limits:
+    memory: 2Gi
+ports:
+  - port: 80
+    containerPort: &port 3000
+envs:
+  NEXTAUTH_SECRET: foo
+  NEXTAUTH_URL: https://www.divadlomir.cz
+  APP_ENV: production
+envsRaw: &envsRaw
+  - name: DB_URL
+    value: postgres://$(DB_USERNAME):$(DB_PASSWORD)@divadlomir-db-prod:5432/divadlomirProd
+  - name: POSTGRES_PRISMA_URL
+    value: $(DB_URL)
+  - name: POSTGRES_URL_NON_POOLING
+    value: $(DB_URL)
+  - name: IMAGE_TAG
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.annotations['container-main-image-tag']
+kubeSecrets: &kubeSecrets
+  owner.divadlomir-db-prod.credentials.postgresql.acid.zalan.do:
+    DB_USERNAME: username
+    DB_PASSWORD: password
+  divadlomir-env: null
+readinessProbeRaw:
+  httpGet:
+    path: /api/graphql
+    port: *port
+  timeoutSeconds: 5
+livenessProbe:
+  httpGet:
+    path: /api/graphql
+    port: *port
+  failureThreshold: 5
+  timeoutSeconds: 5
+ingress:
+  enabled: true
+  simple: false
+  ingressClassName: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    nginx.ingress.kubernetes.io/proxy-body-size: 50m
+    nginx.ingress.kubernetes.io/custom-http-errors: "500, 502, 503"
+    nginx.ingress.kubernetes.io/default-backend: mir-error-page
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+  rules:
+    - host: divadlomir.cz
+      http:
+        paths:
+          - path: /(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: divadlomir--app--prod
+                port:
+                  number: 80
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mir-chyba
+                port:
+                  number: 80
+    - host: www.divadlomir.cz
+      http:
+        paths:
+          - path: /(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: divadlomir--app--prod
+                port:
+                  number: 80
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: mir-chyba
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - divadlomir.cz
+        - www.divadlomir.cz
+      secretName: divadlomir--app--prod-tls
+preDeploymentJob:
+  image: *image
+  args: ["npx", "prisma", "migrate", "deploy"]
+  envsRaw: *envsRaw
+  kubeSecrets: *kubeSecrets
+.cronjobCommon: &cronjob
+  concurrencyPolicy: Forbid
+  suspend: false
+  image: *image
+  envs:
+    CONSOLE: "true"
+  envsRaw: *envsRaw
+  kubeSecrets: *kubeSecrets
+cronjobs:
+  - <<: *cronjob
+    name: process-refund-requests
+    schedule: "* * * * *"
+    command: ["node", "server.js", "process-refund-requests"]
+  - <<: *cronjob
+    name: fio-sync-payments
+    schedule: "*/10 * * * *"
+    command: ["node", "server.js", "fio-sync-payments"]
+  - <<: *cronjob
+    name: fio-send-payments
+    schedule: "5,15,25,35,45,55 * * * *"
+    command: ["node", "server.js", "fio-send-payments"]
+  - <<: *cronjob
+    name: expire-orders
+    schedule: "* * * * *"
+    command: ["node", "server.js", "expire-orders"]
+autoscaling:
+  minReplicas: 5
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 150
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 350
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
