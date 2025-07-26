@@ -1,0 +1,404 @@
+namespace: emetsa-test
+service: emetsa
+component: api
+environment: test
+nodepool: emetsa
+image:
+  repository: crforestcommonweu001.azurecr.io/emetsa
+  # without Java 21
+  # tag: 2024-04-16-111550-webdav-migration-azure-fileshare-10048
+  # with Java 21
+  tag: 2025-07-18-test-35927
+  # tag: 2025-07-17-feat_otel_instrumentation-35889
+replicaCount: 1
+ports:
+  - port: &port 9080
+  - port: 9464
+    name: metrics
+resources:
+  requests:
+    cpu: 200m
+    memory: 2Gi
+  limits:
+    memory: 4Gi
+envs:
+  JAVA_HOME: /usr/local/openjdk-21
+  PATH: /usr/local/openjdk-21/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  SERVER_HOME: /usr/local/apis/em2-rest-server
+  SERVER_USER: root # TODO run as non-root
+  INTEGRATION_LOG: /var/log/emetsa
+  EMETSA_CONF: /etc/emetsa/conf
+keyVaultSecrets:
+  emetsa-nonprod:
+    COMMON_GOOGLE_FIREBASE_API_AUTH_KEY: COMMON-GOOGLE-FIREBASE-API-AUTH-KEY
+    TEST_DB_PASSWORD: TEST-DB-PASSWORD
+    TEST_DB_MOBILE_LOG_PASSWORD: TEST-DB-MOBILE-LOG-PASSWORD
+    TEST_SMS_GATEWAY_PASSWORD: TEST-SMS-GATEWAY-PASSWORD
+    TEST_BASE_URL_AX_BASIC_AUTH_PASS: TEST-BASE-URL-AX-BASIC-AUTH-PASS
+    TEST_REST_API_CREDENTIALS: TEST-REST-API-CREDENTIALS
+    TEST_BASE_URL_LYNX_PASSWORD: TEST-BASE-URL-LYNX-PASSWORD
+    TEST_BASE_URL_LYNX_ESTATES_PASSWORD: TEST-BASE-URL-LYNX-ESTATES-PASSWORD
+    TEST_CRM_EMETSA_SERVICE_PASSWD: TEST-CRM-EMETSA-SERVICE-PASSWD
+    TEST_BASE_URL_AX_MDP_BASIC_AUTH_PASS: TEST-BASE-URL-AX-MDP-BASIC-AUTH-PASS
+    TEST_CRM_REGISTRATION_WESHARE_PASSWD: TEST-CRM-REGISTRATION-WESHARE-PASSWD
+    TEST_CRM_EMETSA_REST_SERVICE_PASSWORD: TEST-CRM-EMETSA-REST-SERVICE-PASSWORD
+    TEST_YTJ_CUSTOMER_KEY: TEST-YTJ-CUSTOMER-KEY
+    TEST_MFILES_PASSWORD: TEST-MFILES-PASSWORD
+    TEST_TAXES_KEYSTORE_PASSWORD: TEST-TAXES-KEYSTORE-PASSWORD
+    TEST_TAXES_TRUSTSTORE_PASSWORD: TEST-TAXES-TRUSTSTORE-PASSWORD
+    TEST_LDAP_PASSWORD: TEST-LDAP-PASSWORD
+    TEST_GOOGLE_API_RECAPTCHA_SECRET_KEY: TEST-GOOGLE-API-RECAPTCHA-SECRET-KEY
+    TEST_GOOGLE_API_RECAPTCHA_SITE_KEY: TEST-GOOGLE-API-RECAPTCHA-SITE-KEY
+    TEST_OPENID_CLIENT_SECRET: TEST-OPENID-CLIENT-SECRET
+    TEST_MOBILE_LOG_API_PASSWORD: TEST-MOBILE-LOG-API-PASSWORD
+    TEST_SIGNATURE_CLIENT_SECRET: TEST-SIGNATURE-CLIENT-SECRET
+    TEST_GIS_PROXY_PASSWORD: TEST-GIS-PROXY-PASSWORD
+    TEST_DRONES_PASSWORD: TEST-DRONES-PASSWORD
+    TEST_BASE_URL_MDP_PASSWORD: TEST-BASE-URL-MDP-PASSWORD
+    TEST_OP_BANK_CLIENT_SECRET: TEST-OP-BANK-CLIENT-SECRET
+    TEST_OP_BANK_PASSWORD: TEST-OP-BANK-PASSWORD
+# sidecars:
+#   logging:
+#     image:
+#       repository: crforestcommonweu001.azurecr.io/fluent/fluent-bit
+#       tag: 3.2.5
+#     args:
+#       - -c
+#       - /fluent-bit/etc/fluent-bit.yaml
+#     keyVaultSecrets:
+#       global:
+#         TEST_EMETSA_LOG_INGESTION_SECRET: TEST-EMETSA-LOG-INGESTION-SECRET
+startupProbe:
+  httpGet:
+    port: *port
+    path: /api/actuator/health
+  initialDelaySeconds: 0 # default
+  periodSeconds: 10
+  timeoutSeconds: 3
+  successThreshold: 1 # default
+  failureThreshold: 30
+annotations:
+  # just a random unused annotations to mark the Application as out of sync to test Sync windows timing
+  trigger-sync: 2024-11-2711:10:00
+ingress:
+  forestfoxemetsatest.storaenso.com:
+    name: public
+    routes:
+      /:
+        service:
+          name: &proxy_name emetsa--public-proxy--test
+          portName: frontend
+        nginxAnnotations:
+          # few directives from onprem nginx
+          server-snippet: |
+            gzip on;
+            gzip_types *;
+            gzip_proxied any;
+            gzip_vary on;
+            gzip_min_length 256;
+            gzip_buffers 32 16k;
+            gzip_comp_level 6;
+            gzip_http_version 1.1;
+
+            add_header Strict-Transport-Security "max-age=63072000" always;
+            rewrite ^/authapi/(.*)$ /api/$1 break;
+            rewrite ^/emetsa-api/(.*) /api/$1 redirect;
+
+            default_type application/octet-stream;
+
+            access_log /var/log/nginx/azure/forestfoxemetsatest.storaenso.com.log upstreaminfo;
+          configuration-snippet: |
+            location ~* ^/internal/em2/access {
+              deny all;
+              return 401;
+            }
+            location ~* ^/em2_login {
+              deny all;
+              return 401;
+            }
+            location ~* ^/internal/em2/acces/fake {
+              deny all;
+              return 401;
+            }
+            location ~* ^/authapi/swagger-ui.html {
+              deny all;
+              return 401;
+            }
+            location ~* ^/emetsa-api {
+              deny all;
+              return 401;
+            }
+      /api:
+        service:
+          name: emetsa--api--test
+          port: 9080
+        nginxAnnotations:
+          # ?! = negative lookahead
+          # when URL matches ^/api but not /api/ext or /api/auth -> block
+          configuration-snippet: |
+            location ~* ^/api(?!(/ext|/auth)) {
+              deny all;
+              return 401;
+            }
+          proxy-body-size: 15M
+      /mdp/api:
+        service:
+          name: *proxy_name
+          portName: mdpapi
+        nginxAnnotations:
+          configuration-snippet: |
+            location ~* ^/mdp/api/mdp {
+              deny all;
+              return 401;
+            }
+            location ~* ^/mdp/api/swagger-ui {
+              deny all;
+              return 401;
+            }
+            location ~* ^/mdp/api/notes {
+              deny all;
+              return 401;
+            }
+      # external services - common across deployments, created manually
+      /eMetsasuunnitelma:
+        service:
+          name: *proxy_name
+          portName: em-suunnitelma
+      /geoserver:
+        service:
+          name: *proxy_name
+          portName: geoserver
+      /map-client(.*):
+        service:
+          name: *proxy_name
+          portName: mapclient
+        nginxAnnotations:
+          use-regex: "true"
+          rewrite-target: /map-next$1
+      /drone/wms(.*):
+        service:
+          name: *proxy_name
+          portName: basemapstest
+        nginxAnnotations:
+          use-regex: "true"
+          rewrite-target: /gisproxy/test/hsfox-drowe-p01/forest/wms$1
+      /i18n(/|$)(.*):
+        service:
+          name: tolgee--app--test
+          namespace: tolgee
+          port: 80
+        nginxAnnotations:
+          use-regex: "true"
+          rewrite-target: /$2
+      # OAuth callbacks - each proxied endpoint (service) has its own proxy container and own callback
+      /oauth2-4180:
+        service:
+          name: *proxy_name
+          portName: frontend
+      /oauth2-4181:
+        service:
+          name: *proxy_name
+          portName: em-suunnitelma
+      /oauth2-4182:
+        service:
+          name: *proxy_name
+          portName: mapclient
+      /oauth2-4183:
+        service:
+          name: *proxy_name
+          portName: mdpapi
+      /oauth2-4184:
+        service:
+          name: *proxy_name
+          portName: geoserver
+      /oauth2-4185:
+        service:
+          name: *proxy_name
+          portName: basemapstest
+  emetsa-test.fox.storaenso.com:
+    name: private
+    routes:
+      /:
+        service:
+          name: emetsa--fe--test
+          port: 80
+        nginxAnnotations:
+          server-snippet: |
+            gzip on;
+            gzip_types *;
+            gzip_proxied any;
+            gzip_vary on;
+            gzip_min_length 256;
+            gzip_buffers 32 16k;
+            gzip_comp_level 6;
+            gzip_http_version 1.1;
+
+            add_header Strict-Transport-Security "max-age=63072000" always;
+            rewrite ^/authapi/(.*)$ /api/$1 break;
+            rewrite ^/emetsa-api/(.*) /api/$1 redirect;
+
+            default_type application/octet-stream;
+
+            access_log /var/log/nginx/azure/emetsa-test.fox.storaenso.com.log upstreaminfo;
+      /api:
+        service:
+          name: emetsa--api--test
+          port: 9080
+        nginxAnnotations:
+          proxy-body-size: 15M
+      /mdp/api:
+        service:
+          name: mdp--api--test
+          namespace: mdp-test
+          port: 80
+      # external services - common across deployments, created manually
+      /eMetsasuunnitelma:
+        service:
+          name: emetsa-emetsasuunnitelma
+          namespace: emetsa-common
+          port: 80
+      /geoserver:
+        service:
+          name: emetsa-geoserver
+          namespace: emetsa-common
+          port: 443
+      /map-client(.*):
+        service:
+          name: emetsa-mapclient
+          namespace: emetsa-common
+          port: 80
+        nginxAnnotations:
+          use-regex: "true"
+          rewrite-target: /map-next$1
+      /drone/wms(.*):
+        service:
+          name: emetsa-forestfoxbasemapstest
+          namespace: emetsa-common
+          port: 80
+        nginxAnnotations:
+          use-regex: "true"
+          rewrite-target: /gisproxy/test/hsfox-drowe-p01/forest/wms$1
+      /i18n(/|$)(.*):
+        service:
+          name: tolgee--app--test
+          namespace: tolgee
+          port: 80
+        nginxAnnotations:
+          use-regex: "true"
+          rewrite-target: /$2
+volumes:
+  emetsa-ro:
+    type: file-share
+    config:
+      resourceGroup: rg-forest-common-aks-kubernetes-services-nonprod-weu-001
+      storageAccountName: seaksteststorage
+      fileShareName: emetsa-ro
+      access:
+        secretStoreName: global
+        accessKeySecretName: STORAGE-ACCOUNT-TEST-ACCESS-KEY
+    readonly: true
+    size: 10Gi
+    mounts:
+      main:
+        - containerPath: /secu
+          volumePath: secu
+          readonly: true
+  emetsa-rw:
+    type: file-share
+    config:
+      resourceGroup: rg-forest-common-aks-kubernetes-services-nonprod-weu-001
+      storageAccountName: seaksteststorage
+      fileShareName: emetsa-rw
+      access:
+        secretStoreName: global
+        accessKeySecretName: STORAGE-ACCOUNT-TEST-ACCESS-KEY
+    readonly: false
+    size: 5000Gi
+    mounts:
+      main:
+        - containerPath: /var/log
+          volumePath: logs-new-cluster
+        - containerPath: /data
+          volumePath: storage
+        - containerPath: /usr/local/apis/em-tax-documents
+          volumePath: em-tax-documents
+          # logging:
+          #   - containerPath: /var/log
+          #     volumePath: logs
+  # fluent-bit-config:
+  #   type: config-map
+  #   useLoggingConfigMap: true
+  #   mounts:
+  #     logging:
+  #       - containerPath: /fluent-bit/etc
+logging:
+  multilineParsers:
+    - name: uuid_prefixed_logs
+      type: regex
+      flush_timeout: 1000
+      rules:
+        - state: start_state
+          # first line, starts with UUID - groups of 8, 4, 4, 4, 12 hex digits separated by dash (-)
+          # the rest of the line has a standardized format but no need to waste time to regex match it
+          # 94573ee9-f68d-46d3-96cd-d6dafe265906 27-02-2025 09:08:57.074 [INFO ] c.s.m.r.s.l.RestLoggingInterceptor - ...
+          regex: /^\h{8}-\h{4}-\h{4}-\h{4}-\h{12}.+$/
+          next_state: log
+        - state: log
+          # anything that does NOT start with the UUID (8,4,4,4,12 hex digits) is part of the log
+          regex: /^\s*(?!\h{8}-\h{4}-\h{4}-\h{4}-\h{12}).*$/
+          next_state: log
+    - name: rest_server
+      type: regex
+      flush_timeout: 1000
+      rules:
+        - state: start_state
+          # first line, starts with timestamp
+          # the rest of the line - same as the UUID prefixed logs
+          # 20-02-2025 11:06:55.417 [getAsyncExecutor-1] ERROR o.h.e.jdbc.spi.SqlExceptionHelper - ...
+          regex: /^\d{1,2}-\d{1,2}-\d{4} \d{2}:\d{2}:\d{2}\.\d{3}.+$/
+          next_state: log
+        - state: log
+          # anything that does NOT start with the UUID (8,4,4,4,12 hex digits) is part of the log
+          regex: /^\s*(?!\d{1,2}-\d{1,2}-\d{4} \d{2}:\d{2}:\d{2}\.\d{3}).*$/
+          next_state: log
+  inputs:
+    - name: tail
+      path: /var/log/emetsa/rest-server/em2-rest-server.log
+      path_key: filename
+      tag: rest-server
+      skip_empty_lines: true
+      buffer_chunk_size: 1M
+      buffer_max_size: 8M
+      multiline.parser: rest_server
+    - name: tail
+      path: /var/log/emetsa/*.log
+      path_key: filename
+      tag: emetsa.<file_name>
+      tag_regex: /var/log/emetsa/(?<file_name>.*)\.log
+      skip_empty_lines: true
+      buffer_chunk_size: 1M
+      buffer_max_size: 8M
+      multiline.parser: uuid_prefixed_logs
+  outputs:
+    - name: azure_logs_ingestion
+      match: rest-server
+      time_key: '@timestamp'
+      time_generated: true
+      compress: true
+      client_id: 935ffe8a-05eb-4090-8cb9-30e0f639bbdb
+      client_secret: ${TEST_EMETSA_LOG_INGESTION_SECRET}
+      tenant_id: 75998ea3-790c-40ea-ac1e-02ee8edfb00f
+      dce_url: https://aks-nonprod-log-ingestion-ml2s.westeurope-1.ingest.monitor.azure.com
+      dcr_id: dcr-dce03d09bdef4bf0952ec3f6d7176cab
+      table_name: TEST_eMetsa_API_Server_CL
+    - name: azure_logs_ingestion
+      match: emetsa.*
+      time_key: '@timestamp'
+      time_generated: true
+      compress: true
+      client_id: 935ffe8a-05eb-4090-8cb9-30e0f639bbdb
+      client_secret: ${TEST_EMETSA_LOG_INGESTION_SECRET}
+      tenant_id: 75998ea3-790c-40ea-ac1e-02ee8edfb00f
+      dce_url: https://aks-nonprod-log-ingestion-ml2s.westeurope-1.ingest.monitor.azure.com
+      dcr_id: dcr-eee452f3ef03463cb39a10ad1b465694
+      table_name: TEST_eMetsa_API_Custom_CL

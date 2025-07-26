@@ -1,0 +1,16 @@
+# certController:
+#   image:
+#     repository: crforestcommonweu001.azurecr.io/external-secrets
+    # tag: Chart `appVersion` = `v0.14.3`
+# image:
+#   repository: crforestcommonweu001.azurecr.io/external-secrets
+# webhook:
+#   image:
+#     repository: crforestcommonweu001.azurecr.io/external-secrets
+log:
+  level: debug
+  timeEncoding: epoch
+
+# global:
+#   nodeSelector:
+#     kubernetes.azure.com/agentpool: system
